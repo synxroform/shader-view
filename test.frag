@@ -13,5 +13,8 @@ in vec2 uv;
 out vec4 color;
 
 void main() {
-  color = vec4(vec3(distance(uv, mouse)), 1.);
+  vec2 uv_mod = mod(uv * 15, 1.);
+  vec2 uv_int = floor(uv * 80);
+  float d = 1. - smoothstep(0.1, 0.5, distance(vec2(0.5), uv_mod));
+  color = vec4(vec3(d), 1.);
 }

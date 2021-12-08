@@ -1,21 +1,20 @@
 #define SDL_MAIN_HANDLED
 #define SPNG_STATIC
 
-#include <gl/glew.h>
-
-#include "spng.h"
-#include "SDL2/SDL.h"
-#include "SDL2/SDL_opengl.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <stdbool.h>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <gl/glew.h>
 
+#include "spng.h"
+
+#include "SDL2/SDL.h"
+#include "SDL2/SDL_opengl.h"
 
 #define UNPOS SDL_WINDOWPOS_UNDEFINED
 #define SHOWN SDL_WINDOW_SHOWN
@@ -28,6 +27,7 @@ void __bad(const char* msg, const char* error) {
   printf("failed to %s : %s\n", msg, error);
   exit(0);
 }
+
 
 typedef struct stat stat_t; 
 
@@ -186,6 +186,7 @@ GLuint create_program(const char** vert_s, const char** frag_s) {
     glAttachShader(prog, vert);
     glAttachShader(prog, frag);
     glLinkProgram(prog);
+    
     if (!check_program(prog)) {
       delete_shaders((GLuint[3]){vert, frag, 0});
       glDeleteProgram(prog);
@@ -208,14 +209,17 @@ void draw_content() {
 
 
 SDL_Window* create_window(int width, int height) {
+  
   if(SDL_Init(SDL_INIT_VIDEO) < 0) 
     __bad("init SDL", SDL_GetError());
+  
   SDL_Window* window = NULL;
   SDL_GLContext context;
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
+  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-    
+  
   window = SDL_CreateWindow("shader-view", UNPOS, UNPOS, width, height, SDL_WINDOW_OPENGL);
   if (window == NULL) 
       __bad("create window", SDL_GetError());
@@ -223,14 +227,15 @@ SDL_Window* create_window(int width, int height) {
   context = SDL_GL_CreateContext(window);
   if (context == NULL) 
     __bad("create opengl context", SDL_GetError());       
+  
   glewExperimental = GL_TRUE;
   GLenum glew_error = glewInit();
+  
   if (glew_error != GLEW_OK)
     __bad("initialize glew", glewGetErrorString(glew_error));
-        
   if (SDL_GL_SetSwapInterval(1) < 0)
     __bad("set vsync", SDL_GetError());
-    
+  
   return window;
 }
 
@@ -298,7 +303,7 @@ int argument_pos(int argc, char **argv, const char *arg) {
 
 
 int main(int argc, char **argv) {
-
+  
   if (argument_pos(argc, argv, "-h") > 0) {
     printf("%s", usage);
     return 0;
@@ -410,15 +415,16 @@ int main(int argc, char **argv) {
   stat_t fstat[2] = {0};
        
   while (!finished) {
-    
+  
     if(stat(argv[shader_path], &fstat[1]) < 0)
       __bad("read shader file", argv[shader_path]);
-      
     if (fstat[0].st_mtime != fstat[1].st_mtime) {
       const char* src_frag = load_shader_code(argv[shader_path]);
       GLuint program = create_program(&bypass_vert, &src_frag);
       if (program) {
-        if (active_program) glDeleteProgram(active_program);
+        if (active_program)  {
+          glDeleteProgram(active_program);
+        }
         active_program = program;
         if (!interactive) {
           draw_content();
@@ -430,6 +436,7 @@ int main(int argc, char **argv) {
     }
     
     for (int n = 0; n < 1000 / delay; n++) {
+      
       while(SDL_PollEvent(&event) != 0) {
         if (event.type == SDL_QUIT) finished = true;
         if (event.type == SDL_MOUSEMOTION && interactive) {
@@ -453,4 +460,3 @@ int main(int argc, char **argv) {
   dispose_window(window);
   return 0;
 }
-
