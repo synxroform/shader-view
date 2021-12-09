@@ -1,20 +1,24 @@
 #define SDL_MAIN_HANDLED
 #define SPNG_STATIC
+#define GLT_IMPLEMENTATION
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <stdbool.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <gl/glew.h>
 
-#include "spng.h"
-
 #include "SDL2/SDL.h"
 #include "SDL2/SDL_opengl.h"
+
+#include "spng.h"
+#include "gltext.h"
+
 
 #define UNPOS SDL_WINDOWPOS_UNDEFINED
 #define SHOWN SDL_WINDOW_SHOWN
@@ -31,6 +35,13 @@ void __bad(const char* msg, const char* error) {
 
 typedef struct stat stat_t; 
 
+typedef struct offscreen_s {
+  GLuint fb;
+  GLuint rb;
+  GLuint tx;
+} offscreen_t;
+
+
 typedef struct shape_s {
   float *xyz;
   float *uvw;
@@ -39,16 +50,20 @@ typedef struct shape_s {
   size_t size; 
 } shape_t;
 
-void free_shape(shape_t sp) {
+void dispose_shape(shape_t sp) {
   free(sp.xyz);
   free(sp.uvw);
   glDeleteBuffers(2, sp.buff);
   glDeleteVertexArrays(1, &(sp.root));
 }
 
-void draw_shape(shape_t sp, GLuint pr) {
+void draw_shape(shape_t sp, GLuint pr, GLuint tx) {
   glUseProgram(pr);
   glBindVertexArray(sp.root);
+  if (tx) {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tx);
+  }  
   glDrawArrays(GL_TRIANGLES, 0, sp.size);
   glUseProgram(0);
 }
@@ -70,6 +85,7 @@ point_t scale_ndc(point_t pt, int w, int h) {
 
 
 GLuint   active_program = 0;
+GLuint   poster_program = 0;
 shape_t  active_screen;
 
 
@@ -140,12 +156,11 @@ char* load_shader_code(const char *path) {
   return code;
 }
 
-void delete_shaders(GLuint shader[]) {
+void dispose_shaders(GLuint shader[]) {
   for (; *shader; shader++) {
     glDeleteShader(*shader);
   }
 }
-
 
 
 bool check_program(GLuint program) {
@@ -172,13 +187,13 @@ GLuint create_program(const char** vert_s, const char** frag_s) {
     
     glCompileShader(vert);
     if (!check_shader(vert)) {
-      delete_shaders((GLuint[3]){vert, frag, 0});
+      dispose_shaders((GLuint[3]){vert, frag, 0});
       return 0;
     }
     
     glCompileShader(frag);
     if (!check_shader(frag)) {
-      delete_shaders((GLuint[3]){vert, frag, 0});
+      dispose_shaders((GLuint[3]){vert, frag, 0});
       return 0;
     }
     
@@ -186,14 +201,13 @@ GLuint create_program(const char** vert_s, const char** frag_s) {
     glAttachShader(prog, vert);
     glAttachShader(prog, frag);
     glLinkProgram(prog);
+    dispose_shaders((GLuint[3]){vert, frag, 0});
     
     if (!check_program(prog)) {
-      delete_shaders((GLuint[3]){vert, frag, 0});
       glDeleteProgram(prog);
       return 0;
     } else return prog;
 }
-
 
 
 void flip_y_axis(void *dest, void *src, size_t height, size_t row_size) {
@@ -202,10 +216,6 @@ void flip_y_axis(void *dest, void *src, size_t height, size_t row_size) {
   }
 }
 
-void draw_content() {
-  glClear(GL_COLOR_BUFFER_BIT);
-  draw_shape(active_screen, active_program);
-}
 
 
 SDL_Window* create_window(int width, int height) {
@@ -217,7 +227,6 @@ SDL_Window* create_window(int width, int height) {
   SDL_GLContext context;
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
   
   window = SDL_CreateWindow("shader-view", UNPOS, UNPOS, width, height, SDL_WINDOW_OPENGL);
@@ -240,12 +249,56 @@ SDL_Window* create_window(int width, int height) {
 }
 
 void dispose_window(SDL_Window* window) {
+  glDeleteProgram(poster_program);
   glDeleteProgram(active_program);
   SDL_DestroyWindow(window);
   SDL_Quit();
 }
 
 
+offscreen_t create_offscreen(size_t w, size_t h) {
+  offscreen_t off;
+  glGenFramebuffers(1, &(off.fb));
+  glBindFramebuffer(GL_FRAMEBUFFER, off.fb);
+  
+  glGenTextures(1, &(off.tx));
+  glBindTexture(GL_TEXTURE_2D, off.tx);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, w, h, 0, GL_RGB, GL_FLOAT, NULL);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, off.tx, 0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  
+  glGenRenderbuffers(1, &(off.rb));
+  glBindRenderbuffer(GL_RENDERBUFFER, off.rb);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, off.rb);
+  glBindRenderbuffer(GL_RENDERBUFFER, 0);
+  
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    __bad("create offscreen buffer", "");  
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  return off;
+} 
+
+void dispose_offscreen(offscreen_t off) {
+  glDeleteTextures(1, &(off.tx));
+  glDeleteRenderbuffers(1, &(off.rb));
+  glDeleteFramebuffers(1, &(off.fb));
+}
+
+
+void draw_content(offscreen_t off) {
+  glBindFramebuffer(GL_FRAMEBUFFER, off.fb);
+  glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  draw_shape(active_screen, active_program, 0);
+  
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glClear(GL_COLOR_BUFFER_BIT);
+  draw_shape(active_screen, poster_program, off.tx);
+}
 
 
 static const char* usage = 
@@ -262,10 +315,29 @@ static const char* usage =
 
 const char *bypass_vert =
 "#version 430 \n"
-"layout (location = 0) in vec3 pos; \n"
-"layout (location = 1) in vec3 tex; \n"
+"layout(location = 0) in vec3 pos; \n"
+"layout(location = 1) in vec3 tex; \n"
 "out vec2 uv; \n"
 "void main() { gl_Position = vec4(pos, 1.); uv = tex.xy; } \n";
+
+const char *post_frag =
+"#version 430 \n"
+"in vec2 uv; \n"
+"out vec4 color; \n"
+"uniform sampler2D tex; \n"
+"layout(location = 0) uniform int mode;\n "
+
+"void main() { \n"
+" vec2 ts = textureSize(tex, 0); \n"
+" vec2 pp = uv / max(vec2(1.0), (ts.xy / ts.yx)); \n"
+" vec4 cc = texture2D(tex, (pp + 1) * 0.5); \n"
+" switch(mode) { \n"
+"   case 0 : color = cc; break; \n"
+"   case 1 : color = vec4(vec3(cc.r), 1.); break; \n"
+"   case 2 : color = vec4(vec3(cc.g), 1.); break; \n"
+"   case 3 : color = vec4(vec3(cc.b), 1.); break; \n"
+"   case 4 : color = abs(cc); break; \n"
+"   case 5 : color = vec4(1 - cc.rgb, 1.0); break;} } \n";
 
 
 void split_path(const char* src, char* path, char* name) {
@@ -301,6 +373,21 @@ int argument_pos(int argc, char **argv, const char *arg) {
   return 0;
 }
 
+void update_info(GLTtext *info, int x, int y, GLuint fb) {
+  float px[3] = {0};
+  char  sn[3];
+  glBindFramebuffer(GL_FRAMEBUFFER, fb);
+  glReadPixels(x, y, 1, 1, GL_RGB, GL_FLOAT, px);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  for (int n = 0; n < 4; n++) { 
+    sn[n] = px[n] >= 0 ? '+' : '-';
+    px[n] = fabs(px[n]);
+  }
+  sprintf(info->_text, "INFO/R%c%1.3f/G%c%1.3f/B%c%1.3f", 
+    sn[0], px[0], sn[1], px[1], sn[2], px[2]);
+  info->_dirty = GL_TRUE;
+}
+
 
 int main(int argc, char **argv) {
   
@@ -327,12 +414,15 @@ int main(int argc, char **argv) {
   
   
   SDL_Window* window = create_window(width, height);
+  offscreen_t offscr = create_offscreen(width, height);
   active_screen = gen_quad(  
     (point_t){-1, 1, 0}, 
     (point_t){1, -1, 0}, 
     scale_ndc((point_t){-1, 1, 0}, width, height), 
     scale_ndc((point_t){1, -1, 0}, width, height));
 
+  poster_program = create_program(&bypass_vert, &post_frag);
+  
   // ANIMATION BATCH
 
   int anim_arg = argument_pos(argc, argv, "-a");
@@ -342,14 +432,13 @@ int main(int argc, char **argv) {
       
       int num_frames = atoi(argv[anim_arg + 1]);
       const char* src_frag = load_shader_code(argv[shader_path]);
-      
       active_program = create_program(&bypass_vert, &src_frag);
-       
+     
       struct spng_ihdr ihdr = {
         .color_type = SPNG_COLOR_TYPE_TRUECOLOR_ALPHA,
         .height = height,
         .width = width,
-        .bit_depth = 16,
+        .bit_depth = 24,
       };
       
       float delta = 1.0 / (num_frames-1);
@@ -379,7 +468,7 @@ int main(int argc, char **argv) {
           spng_set_ihdr(enc, &ihdr);
           
           glProgramUniform1f(active_program, 0, delta * n);
-          draw_content();
+          draw_content(offscr);
           glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_SHORT, frame_buf);
           SDL_GL_SwapWindow(window);
           
@@ -402,15 +491,22 @@ int main(int argc, char **argv) {
       __bad("output animation", "use -h for help");
     }
     
-    free_shape(active_screen);
+    dispose_shape(active_screen);
     dispose_window(window);
     return 0;
   }
 
   // INTERACTIVE AND PERSISTENT
-
+  
+  gltInit();
+  GLTtext *info = gltCreateText();
+  gltSetText(info, "INFO/R+0.000/G+0.000/B+0.000");
+  
   bool interactive = argument_pos(argc, argv, "-i") > 0;
   bool finished = false;
+  bool request_update = true;
+  bool request_info = false;
+  
   SDL_Event event;
   stat_t fstat[2] = {0};
        
@@ -419,6 +515,7 @@ int main(int argc, char **argv) {
     if(stat(argv[shader_path], &fstat[1]) < 0)
       __bad("read shader file", argv[shader_path]);
     if (fstat[0].st_mtime != fstat[1].st_mtime) {
+      printf("new shader\n");
       const char* src_frag = load_shader_code(argv[shader_path]);
       GLuint program = create_program(&bypass_vert, &src_frag);
       if (program) {
@@ -426,8 +523,9 @@ int main(int argc, char **argv) {
           glDeleteProgram(active_program);
         }
         active_program = program;
+        request_update = true;
         if (!interactive) {
-          draw_content();
+          draw_content(offscr);
           SDL_GL_SwapWindow(window);
         }
       }
@@ -441,22 +539,61 @@ int main(int argc, char **argv) {
         if (event.type == SDL_QUIT) finished = true;
         if (event.type == SDL_MOUSEMOTION && interactive) {
           int x, y;
-          if (SDL_GetMouseState(&x, &y) & SDL_BUTTON(1)) {
-              float ndc_x = (((float)x / width) * 2) - 1;
-              float ndc_y = (((float)y / height) * 2) - 1;
-              point_t mouse_pt = scale_ndc((point_t) { ndc_x, -ndc_y }, width, height);
-              glProgramUniform2f(active_program, 1, mouse_pt.x, mouse_pt.y);            
+          uint32_t btn_state = SDL_GetMouseState(&x, &y);
+          
+          if (btn_state & SDL_BUTTON(1)) {
+            float ndc_x = (((float)x / width) * 2) - 1;
+            float ndc_y = (((float)y / height) * 2) - 1;
+            point_t mouse_pt = scale_ndc((point_t) { ndc_x, -ndc_y }, width, height);
+            glProgramUniform2f(active_program, 1, mouse_pt.x, mouse_pt.y);            
           }
-        }      
+          if (btn_state & SDL_BUTTON(3)) {
+            update_info(info, x, height - y, offscr.fb);
+          }
+        }
+        if (event.type == SDL_MOUSEBUTTONDOWN) {
+          if (event.button.button == SDL_BUTTON_RIGHT) {
+            update_info(info, event.button.x, height - event.button.y, offscr.fb);
+            request_info = true;
+          }
+        }
+        if (event.type == SDL_MOUSEBUTTONUP) { 
+          request_info = false;
+        }
+        if (event.type == SDL_KEYDOWN) {
+          int mode = 0;
+          switch (event.key.keysym.sym) {
+            case SDLK_r : mode = 1; break;
+            case SDLK_g : mode = 2; break;
+            case SDLK_b : mode = 3; break; 
+            case SDLK_a : mode = 4; break;
+            case SDLK_i : mode = 5; break;
+          }
+          glProgramUniform1i(poster_program, 0, mode);
+        }
+        if (event.type == SDL_KEYUP) {
+          glProgramUniform1i(poster_program, 0, 0);
+        }
+        
+        request_update = true;
       }
-      if (interactive) { 
-        draw_content();
+      if (interactive && request_update) { 
+        draw_content(offscr);
+        if (request_info) {
+          gltBeginDraw();
+          gltColor(1.0, 1.0, 1.0, 1.0);
+          gltDrawText2D(info, 0, 0, 1);
+          gltEndDraw();
+        }
         SDL_GL_SwapWindow(window);
       }
-      SDL_Delay(delay);    
+      request_update = false;
+      SDL_Delay(delay);   
     }
   }
-  free_shape(active_screen);
+  dispose_offscreen(offscr);
+  dispose_shape(active_screen);
+  gltTerminate();
   dispose_window(window);
   return 0;
 }
