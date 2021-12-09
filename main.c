@@ -438,7 +438,7 @@ int main(int argc, char **argv) {
         .color_type = SPNG_COLOR_TYPE_TRUECOLOR_ALPHA,
         .height = height,
         .width = width,
-        .bit_depth = 24,
+        .bit_depth = 16,
       };
       
       float delta = 1.0 / (num_frames-1);
