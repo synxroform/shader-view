@@ -23,6 +23,6 @@ project "spng"
 project "shader-view"
   language "C"
   kind "ConsoleApp"
-  files {"main.c", "gltext.h"}
+  files {"main.c", "gltext.h", "clipboard.h"}
   links {"SDL2", "glew32", "opengl32", "spng", "miniz"}
   targetdir "."

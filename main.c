@@ -1,3 +1,8 @@
+
+// MIT LICENSE
+// (c) github.com/synxroform
+
+
 #define SDL_MAIN_HANDLED
 #define SPNG_STATIC
 #define GLT_IMPLEMENTATION
@@ -8,6 +13,8 @@
 #include <time.h>
 #include <math.h>
 #include <stdbool.h>
+
+#include <windows.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -327,6 +334,12 @@ const char *post_frag =
 "uniform sampler2D tex; \n"
 "layout(location = 0) uniform int mode;\n "
 
+"vec3 color_picker(vec2 uv) { \n"
+"  vec3 hsb = clamp(vec3(uv.x, uv.y, 1.), 0., 1.); \n"
+"  vec3 rgb = clamp(abs(mod(hsb.x*6.0+vec3(0.0,4.0,2.0),6.0)-3.0)-1.0, 0.0,1.0 ); \n"
+"  rgb = rgb*rgb*(3.0-2.0*rgb); \n"
+"  return hsb.z * mix(vec3(1.0), rgb, hsb.y); } \n"
+
 "void main() { \n"
 " vec2 ts = textureSize(tex, 0); \n"
 " vec2 pp = uv / max(vec2(1.0), (ts.xy / ts.yx)); \n"
@@ -337,7 +350,9 @@ const char *post_frag =
 "   case 2 : color = vec4(vec3(cc.g), 1.); break; \n"
 "   case 3 : color = vec4(vec3(cc.b), 1.); break; \n"
 "   case 4 : color = abs(cc); break; \n"
-"   case 5 : color = vec4(1 - cc.rgb, 1.0); break;} } \n";
+"   case 5 : color = vec4(1 - cc.rgb, 1.); break; \n"
+"   case 6 : color = vec4(color_picker((pp + 1) * 0.5), 1.); } \n"
+"} \n";
 
 
 void split_path(const char* src, char* path, char* name) {
@@ -373,7 +388,24 @@ int argument_pos(int argc, char **argv, const char *arg) {
   return 0;
 }
 
-void update_info(GLTtext *info, int x, int y, GLuint fb) {
+
+void copy_to_clipboard(const char* msg) {
+  size_t ml = strlen(msg);
+  void* clip = GlobalAlloc(GMEM_MOVEABLE | GMEM_DDESHARE, ml + 1);
+  void* clip_mem = GlobalLock(clip);
+  memcpy(clip_mem, msg, ml);
+  ((char*)clip_mem)[ml] = 0;
+  GlobalUnlock(clip);
+  
+  if (OpenClipboard(NULL)) {
+    EmptyClipboard();
+    SetClipboardData(CF_TEXT, clip);
+    CloseClipboard();
+  }
+}
+
+
+void update_info(GLTtext *info, int x, int y, GLuint fb, char* clipboard) {
   float px[3] = {0};
   char  sn[3];
   glBindFramebuffer(GL_FRAMEBUFFER, fb);
@@ -383,6 +415,9 @@ void update_info(GLTtext *info, int x, int y, GLuint fb) {
     sn[n] = px[n] >= 0 ? '+' : '-';
     px[n] = fabs(px[n]);
   }
+  if (clipboard) {
+   sprintf(clipboard, "vec4(%1.3f, %1.3f, %1.3f, 1.0)", px[0], px[1], px[2]); 
+  }
   sprintf(info->_text, "INFO/R%c%1.3f/G%c%1.3f/B%c%1.3f", 
     sn[0], px[0], sn[1], px[1], sn[2], px[2]);
   info->_dirty = GL_TRUE;
@@ -390,7 +425,6 @@ void update_info(GLTtext *info, int x, int y, GLuint fb) {
 
 
 int main(int argc, char **argv) {
-  
   if (argument_pos(argc, argv, "-h") > 0) {
     printf("%s", usage);
     return 0;
@@ -499,14 +533,18 @@ int main(int argc, char **argv) {
   // INTERACTIVE AND PERSISTENT
   
   gltInit();
+  char picker[32] = {0};
   GLTtext *info = gltCreateText();
   gltSetText(info, "INFO/R+0.000/G+0.000/B+0.000");
+  
   
   bool interactive = argument_pos(argc, argv, "-i") > 0;
   bool finished = false;
   bool request_update = true;
   bool request_info = false;
+  bool request_color = false;
   
+ 
   SDL_Event event;
   stat_t fstat[2] = {0};
        
@@ -548,17 +586,21 @@ int main(int argc, char **argv) {
             glProgramUniform2f(active_program, 1, mouse_pt.x, mouse_pt.y);            
           }
           if (btn_state & SDL_BUTTON(3)) {
-            update_info(info, x, height - y, offscr.fb);
+            GLuint fb = request_color ? 0 : offscr.fb;
+            update_info(info, x, height - y, fb, picker);
           }
         }
         if (event.type == SDL_MOUSEBUTTONDOWN) {
           if (event.button.button == SDL_BUTTON_RIGHT) {
-            update_info(info, event.button.x, height - event.button.y, offscr.fb);
+            GLuint fb = request_color ? 0 : offscr.fb;
+            update_info(info, event.button.x, height - event.button.y, fb, picker);
             request_info = true;
           }
         }
         if (event.type == SDL_MOUSEBUTTONUP) { 
+          copy_to_clipboard(picker);
           request_info = false;
+          request_color = false;
         }
         if (event.type == SDL_KEYDOWN) {
           int mode = 0;
@@ -568,6 +610,7 @@ int main(int argc, char **argv) {
             case SDLK_b : mode = 3; break; 
             case SDLK_a : mode = 4; break;
             case SDLK_i : mode = 5; break;
+            case SDLK_c : mode = 6; request_color = true; break;
           }
           glProgramUniform1i(poster_program, 0, mode);
         }
