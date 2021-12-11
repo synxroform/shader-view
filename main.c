@@ -43,9 +43,10 @@ void __bad(const char* msg, const char* error) {
 typedef struct stat stat_t; 
 
 typedef struct offscreen_s {
-  GLuint fb;
-  GLuint rb;
-  GLuint tx;
+  GLuint fb[2]; // 0-simple 1-MSAA
+  GLuint rb[2]; // ..
+  GLuint tx[2]; // ..
+  size_t wh[2]; // width,height
 } offscreen_t;
 
 
@@ -143,7 +144,7 @@ bool check_shader(GLuint shader) {
     glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &ll);
     char log[ll];
     glGetShaderInfoLog(shader, ll, &ll, log);
-    printf("%s", log);
+    printf("[COMPILATION ERROR]\n%s", log);
     return false;
   }
   return true;
@@ -236,6 +237,10 @@ SDL_Window* create_window(int width, int height) {
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 5);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
   
+  // as of now this is meaningless  
+  // SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+  // SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4);
+  
   window = SDL_CreateWindow("shader-view", UNPOS, UNPOS, width, height, SDL_WINDOW_OPENGL);
   if (window == NULL) 
       __bad("create window", SDL_GetError());
@@ -252,6 +257,7 @@ SDL_Window* create_window(int width, int height) {
   if (SDL_GL_SetSwapInterval(1) < 0)
     __bad("set vsync", SDL_GetError());
   
+  //glEnable(GL_MULTISAMPLE);
   return window;
 }
 
@@ -264,47 +270,73 @@ void dispose_window(SDL_Window* window) {
 
 
 offscreen_t create_offscreen(size_t w, size_t h) {
-  offscreen_t off;
-  glGenFramebuffers(1, &(off.fb));
-  glBindFramebuffer(GL_FRAMEBUFFER, off.fb);
+  offscreen_t off = { .wh = {w, h} };
+  glGenFramebuffers(2, off.fb);
+  glGenTextures(2, off.tx);
+  glGenRenderbuffers(2, off.rb);
   
-  glGenTextures(1, &(off.tx));
-  glBindTexture(GL_TEXTURE_2D, off.tx);
+  // RAW buffer
+  glBindFramebuffer(GL_FRAMEBUFFER, off.fb[0]);
+  
+  glBindTexture(GL_TEXTURE_2D, off.tx[0]);
   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB32F, w, h, 0, GL_RGB, GL_FLOAT, NULL);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, off.tx, 0);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, off.tx[0], 0);
   glBindTexture(GL_TEXTURE_2D, 0);
   
-  glGenRenderbuffers(1, &(off.rb));
-  glBindRenderbuffer(GL_RENDERBUFFER, off.rb);
+  glBindRenderbuffer(GL_RENDERBUFFER, off.rb[0]);
   glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
-  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, off.rb);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, off.rb[0]);
   glBindRenderbuffer(GL_RENDERBUFFER, 0);
   
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
     __bad("create offscreen buffer", "");  
+  
+  // MSAA buffer // this trick doesn't work with procedural textures
+  /*
+  glBindFramebuffer(GL_FRAMEBUFFER, off.fb[1]);
+  glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, off.tx[1]);
+  glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGB32F, w, h, true);
+  glTexParameteri(GL_TEXTURE_2D_MULTISAMPLE, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D_MULTISAMPLE, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D_MULTISAMPLE, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glTexParameteri(GL_TEXTURE_2D_MULTISAMPLE, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, off.tx[1], 0);
+  glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+  
+  glBindRenderbuffer(GL_RENDERBUFFER, off.rb[1]);
+  glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH24_STENCIL8, w, h);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, off.rb[1]);
+  glBindRenderbuffer(GL_RENDERBUFFER, 0);
+  
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    __bad("create MSAA buffer", "");
+  */
+  
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   return off;
 } 
 
 void dispose_offscreen(offscreen_t off) {
-  glDeleteTextures(1, &(off.tx));
-  glDeleteRenderbuffers(1, &(off.rb));
-  glDeleteFramebuffers(1, &(off.fb));
+  glDeleteTextures(2, off.tx);
+  glDeleteRenderbuffers(2, off.rb);
+  glDeleteFramebuffers(2, off.fb);
 }
 
 
 void draw_content(offscreen_t off) {
-  glBindFramebuffer(GL_FRAMEBUFFER, off.fb);
+  glBindFramebuffer(GL_FRAMEBUFFER, off.fb[0]);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   draw_shape(active_screen, active_program, 0);
   
+  //glBlitNamedFramebuffer(off.fb[1], off.fb[0], 0, 0, off.wh[0], off.wh[1], 0, 0, off.wh[0], off.wh[1], GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glClear(GL_COLOR_BUFFER_BIT);
-  draw_shape(active_screen, poster_program, off.tx);
+  draw_shape(active_screen, poster_program, off.tx[0]);
 }
 
 
@@ -324,12 +356,12 @@ const char *bypass_vert =
 "#version 430 \n"
 "layout(location = 0) in vec3 pos; \n"
 "layout(location = 1) in vec3 tex; \n"
-"out vec2 uv; \n"
+"sample smooth out vec2 uv; \n"
 "void main() { gl_Position = vec4(pos, 1.); uv = tex.xy; } \n";
 
 const char *post_frag =
 "#version 430 \n"
-"in vec2 uv; \n"
+"sample smooth in vec2 uv; \n"
 "out vec4 color; \n"
 "uniform sampler2D tex; \n"
 "layout(location = 0) uniform int mode;\n "
@@ -343,7 +375,7 @@ const char *post_frag =
 "void main() { \n"
 " vec2 ts = textureSize(tex, 0); \n"
 " vec2 pp = uv / max(vec2(1.0), (ts.xy / ts.yx)); \n"
-" vec4 cc = texture2D(tex, (pp + 1) * 0.5); \n"
+" vec4 cc = texture2D(tex, (pp + 1) * .5); \n"
 " switch(mode) { \n"
 "   case 0 : color = cc; break; \n"
 "   case 1 : color = vec4(vec3(cc.r), 1.); break; \n"
@@ -405,21 +437,26 @@ void copy_to_clipboard(const char* msg) {
 }
 
 
+
+
 void update_info(GLTtext *info, int x, int y, GLuint fb, char* clipboard) {
   float px[3] = {0};
+  char  xx[16 * 3] = {0};
   char  sn[3];
   glBindFramebuffer(GL_FRAMEBUFFER, fb);
   glReadPixels(x, y, 1, 1, GL_RGB, GL_FLOAT, px);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
-  for (int n = 0; n < 4; n++) { 
+  for (int n = 0; n < 3; n++) { 
     sn[n] = px[n] >= 0 ? '+' : '-';
     px[n] = fabs(px[n]);
+    sprintf(xx + 16 * n, "%1.3f", px[n]); // trim fp numbers length
   }
   if (clipboard) {
+   memset(clipboard, 0, strlen(clipboard)); 
    sprintf(clipboard, "vec4(%1.3f, %1.3f, %1.3f, 1.0)", px[0], px[1], px[2]); 
   }
-  sprintf(info->_text, "INFO/R%c%1.3f/G%c%1.3f/B%c%1.3f", 
-    sn[0], px[0], sn[1], px[1], sn[2], px[2]);
+  sprintf(info->_text, "INFO/R%c%.5s/G%c%.5s/B%c%.5s", 
+    sn[0], xx, sn[1], xx+16, sn[2], xx+32);
   info->_dirty = GL_TRUE;
 }
 
@@ -533,17 +570,18 @@ int main(int argc, char **argv) {
   // INTERACTIVE AND PERSISTENT
   
   gltInit();
-  char picker[32] = {0};
+  char picker[64] = {0};
   GLTtext *info = gltCreateText();
+  GLTtext *error = gltCreateText();
   gltSetText(info, "INFO/R+0.000/G+0.000/B+0.000");
-  
+  gltSetText(error, "COMPILATION:ERROR");
   
   bool interactive = argument_pos(argc, argv, "-i") > 0;
   bool finished = false;
   bool request_update = true;
   bool request_info = false;
   bool request_color = false;
-  
+  bool request_error = false;
  
   SDL_Event event;
   stat_t fstat[2] = {0};
@@ -553,7 +591,6 @@ int main(int argc, char **argv) {
     if(stat(argv[shader_path], &fstat[1]) < 0)
       __bad("read shader file", argv[shader_path]);
     if (fstat[0].st_mtime != fstat[1].st_mtime) {
-      printf("new shader\n");
       const char* src_frag = load_shader_code(argv[shader_path]);
       GLuint program = create_program(&bypass_vert, &src_frag);
       if (program) {
@@ -561,12 +598,15 @@ int main(int argc, char **argv) {
           glDeleteProgram(active_program);
         }
         active_program = program;
-        request_update = true;
+        request_error = false;
         if (!interactive) {
           draw_content(offscr);
           SDL_GL_SwapWindow(window);
         }
+      } else {
+        request_error = true;
       }
+      request_update = true;
       fstat[0] = fstat[1];
       free((char*)src_frag);
     }
@@ -586,13 +626,13 @@ int main(int argc, char **argv) {
             glProgramUniform2f(active_program, 1, mouse_pt.x, mouse_pt.y);            
           }
           if (btn_state & SDL_BUTTON(3)) {
-            GLuint fb = request_color ? 0 : offscr.fb;
+            GLuint fb = request_color ? 0 : offscr.fb[0];
             update_info(info, x, height - y, fb, picker);
           }
         }
         if (event.type == SDL_MOUSEBUTTONDOWN) {
           if (event.button.button == SDL_BUTTON_RIGHT) {
-            GLuint fb = request_color ? 0 : offscr.fb;
+            GLuint fb = request_color ? 0 : offscr.fb[0];
             update_info(info, event.button.x, height - event.button.y, fb, picker);
             request_info = true;
           }
@@ -622,10 +662,10 @@ int main(int argc, char **argv) {
       }
       if (interactive && request_update) { 
         draw_content(offscr);
-        if (request_info) {
+        if (request_info || request_error) {
           gltBeginDraw();
           gltColor(1.0, 1.0, 1.0, 1.0);
-          gltDrawText2D(info, 0, 0, 1);
+          gltDrawText2D(request_error ? error : info, 0, 0, 1);
           gltEndDraw();
         }
         SDL_GL_SwapWindow(window);
