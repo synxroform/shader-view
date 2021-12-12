@@ -14,7 +14,7 @@ target it's a motion design for POS.
 > premake5 gmake2 \
 > cd build \
 > make config=release \
-> cd \
+> cd
 
 ## usage
 
