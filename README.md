@@ -9,6 +9,13 @@ target it's a motion design for POS.
 
 <p align="center"><img src="pixie/shader-view.webp"/></p>
 
+## compilation
+
+> premake5 gmake2
+> cd build
+> make config=release
+> cd ..
+
 ## usage
 
 In order to compile this thing, you need standard SDL2, glew, opengl. Currently only
@@ -23,7 +30,7 @@ To record animation ...
 
 |option|meaning  |
 |--|--|
-| -h |help  |
+|-h |help  |
 |-a N|record N frames|
 |-x W,H|size of the window|
 |-f file|fragment shader|
@@ -37,11 +44,12 @@ Keyboard bindings
 |r|red channel|
 |g|g channel|
 |b|b channel|
-|c| color picker|
+|c|color picker|
+|t|toggle timer|
 
 Press right mouse button to show information about pixel, this information also 
-copied to clipboard as a color vec4(R, G, B, 1.0). 
+copied to clipboard as a color vec4(R, G, B, 1.0).
 
-
-
-
+## time
+Notice, when recording animation with -a, timer inerpolates from 0 to 1, therefore you
+should remap it to desired range in your fragment shader.  

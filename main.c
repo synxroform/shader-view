@@ -461,6 +461,8 @@ void update_info(GLTtext *info, int x, int y, GLuint fb, char* clipboard) {
 }
 
 
+//////////////////////////////////////////////////////////////////
+
 int main(int argc, char **argv) {
   if (argument_pos(argc, argv, "-h") > 0) {
     printf("%s", usage);
@@ -494,7 +496,7 @@ int main(int argc, char **argv) {
 
   poster_program = create_program(&bypass_vert, &post_frag);
   
-  // ANIMATION BATCH
+  // ANIMATION BATCH //
 
   int anim_arg = argument_pos(argc, argv, "-a");
   if (anim_arg > 0) {
@@ -504,7 +506,8 @@ int main(int argc, char **argv) {
       int num_frames = atoi(argv[anim_arg + 1]);
       const char* src_frag = load_shader_code(argv[shader_path]);
       active_program = create_program(&bypass_vert, &src_frag);
-     
+      glProgramUniform2i(active_program, 3, width, height);
+      
       struct spng_ihdr ihdr = {
         .color_type = SPNG_COLOR_TYPE_TRUECOLOR_ALPHA,
         .height = height,
@@ -567,7 +570,7 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  // INTERACTIVE AND PERSISTENT
+  // INTERACTIVE AND PERSISTENT //
   
   gltInit();
   char picker[64] = {0};
@@ -576,8 +579,11 @@ int main(int argc, char **argv) {
   gltSetText(info, "INFO/R+0.000/G+0.000/B+0.000");
   gltSetText(error, "COMPILATION:ERROR");
   
+  uint64_t timer = 0;
+  
   bool interactive = argument_pos(argc, argv, "-i") > 0;
   bool finished = false;
+  bool always_update = false;
   bool request_update = true;
   bool request_info = false;
   bool request_color = false;
@@ -598,6 +604,7 @@ int main(int argc, char **argv) {
           glDeleteProgram(active_program);
         }
         active_program = program;
+        glProgramUniform2i(active_program, 3, width, height);
         request_error = false;
         if (!interactive) {
           draw_content(offscr);
@@ -651,16 +658,17 @@ int main(int argc, char **argv) {
             case SDLK_a : mode = 4; break;
             case SDLK_i : mode = 5; break;
             case SDLK_c : mode = 6; request_color = true; break;
+            case SDLK_t : always_update = !always_update; break;
           }
           glProgramUniform1i(poster_program, 0, mode);
         }
         if (event.type == SDL_KEYUP) {
           glProgramUniform1i(poster_program, 0, 0);
-        }
-        
+        }    
         request_update = true;
       }
-      if (interactive && request_update) { 
+      if (interactive && request_update || always_update) {
+        glProgramUniform1f(active_program, 0, (float)timer / 1000);
         draw_content(offscr);
         if (request_info || request_error) {
           gltBeginDraw();
@@ -671,7 +679,8 @@ int main(int argc, char **argv) {
         SDL_GL_SwapWindow(window);
       }
       request_update = false;
-      SDL_Delay(delay);   
+      SDL_Delay(delay);  
+      if (always_update) timer += delay;
     }
   }
   dispose_offscreen(offscr);
