@@ -11,10 +11,10 @@ target it's a motion design for POS.
 
 ## compilation
 
-> premake5 gmake2 --
-> cd build --
-> make config=release --
-> cd --
+> premake5 gmake2 \
+> cd build \
+> make config=release \
+> cd \
 
 ## usage
 
