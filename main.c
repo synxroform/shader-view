@@ -225,7 +225,6 @@ void flip_y_axis(void *dest, void *src, size_t height, size_t row_size) {
 }
 
 
-
 SDL_Window* create_window(int width, int height) {
   
   if(SDL_Init(SDL_INIT_VIDEO) < 0) 
@@ -447,13 +446,18 @@ void update_info(GLTtext *info, int x, int y, GLuint fb, char* clipboard) {
   glReadPixels(x, y, 1, 1, GL_RGB, GL_FLOAT, px);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   for (int n = 0; n < 3; n++) { 
-    sn[n] = px[n] >= 0 ? '+' : '-';
-    px[n] = fabs(px[n]);
-    sprintf(xx + 16 * n, "%1.3f", px[n]); // trim fp numbers length
+    if (isnormal(px[n])) {
+      sn[n] = px[n] >= 0 ? '+' : '-';
+      px[n] = fabs(px[n]);
+      sprintf(xx + 16 * n, "%1.3f", px[n]);
+    } else {
+      sn[n] = '?';
+      sprintf(xx + 16 * n, "%s", "?.???");
+    }
   }
   if (clipboard) {
    memset(clipboard, 0, strlen(clipboard)); 
-   sprintf(clipboard, "vec4(%1.3f, %1.3f, %1.3f, 1.0)", px[0], px[1], px[2]); 
+   sprintf(clipboard, "vec4(%.5s, %.5s, %.5s, 1.0)", xx, xx+16, xx+32); 
   }
   sprintf(info->_text, "INFO/R%c%.5s/G%c%.5s/B%c%.5s", 
     sn[0], xx, sn[1], xx+16, sn[2], xx+32);
