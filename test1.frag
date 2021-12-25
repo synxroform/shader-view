@@ -38,7 +38,7 @@ float domain(vec2 uv, vec2 h, vec2 v, vec2 s) {
 void main() {
   vec2 origin = vec2(0.25, 0.5);
   
-  float fx = mouse.y * 0.8;
+  float fx = time * 0.1;
   float d0 = distance(uv - origin, vec2(0.)) * 8;
   float r0 = rand(floor(d0));
   float mm = smoothstep(2., 2.1, d0);

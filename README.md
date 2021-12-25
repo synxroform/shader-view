@@ -24,14 +24,16 @@ amount of it. To run with mouse and keybord input type ...
 
 > shader-view -i -x 400,600 -f test.frag 
 
-To record animation ...
+To record 4 seconds of 24 fps animation ...
 
-> shader-view -a 48 -x 400,600 -f test.frag -o anim/frame_name
+> shader-view -a 24,4 -x 400,600 -f test.frag -o anim/frame_name
+
+output files will be named frame_name_1.png frame_name_2.png e.t.c
 
 |option|meaning  |
 |--|--|
 |-h |help  |
-|-a N|record N frames|
+|-a fps,dur |record N frames|
 |-x W,H|size of the window|
 |-f file|fragment shader|
 |-o file|animation output|
@@ -47,9 +49,13 @@ Keyboard bindings
 |c|color picker|
 |t|toggle timer|
 
+## clipboard
+
 Press right mouse button to show information about pixel, this information also 
 copied to clipboard as a color vec4(R, G, B, 1.0).
 
-## time
-Notice, when recording animation with -a, timer inerpolates from 0 to 1, therefore you
-should remap it to desired range in your fragment shader.  
+## examples
+
+Working examples can be found in the test*.frag respectively, more to come.
+
+<p align="center"><img src="pixie/examples.webp"/></p>

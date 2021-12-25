@@ -446,7 +446,7 @@ void update_info(GLTtext *info, int x, int y, GLuint fb, char* clipboard) {
   glReadPixels(x, y, 1, 1, GL_RGB, GL_FLOAT, px);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   for (int n = 0; n < 3; n++) { 
-    if (isnormal(px[n])) {
+    if (!isinf(px[n]) && !isnan(px[n])) {
       sn[n] = px[n] >= 0 ? '+' : '-';
       px[n] = fabs(px[n]);
       sprintf(xx + 16 * n, "%1.3f", px[n]);
@@ -507,7 +507,10 @@ int main(int argc, char **argv) {
     int out_arg = argument_pos(argc, argv, "-o");
     if (out_arg > 0) {
       
-      int num_frames = atoi(argv[anim_arg + 1]);
+      int anim_fps, num_frames;
+      float duration;
+      sscanf(argv[anim_arg + 1], "%d,%f", &anim_fps, &duration);
+      num_frames = floor(anim_fps * duration);
       const char* src_frag = load_shader_code(argv[shader_path]);
       active_program = create_program(&bypass_vert, &src_frag);
       glProgramUniform2i(active_program, 3, width, height);
@@ -519,7 +522,7 @@ int main(int argc, char **argv) {
         .bit_depth = 16,
       };
       
-      float delta = 1.0 / (num_frames-1);
+      float delta = duration / (num_frames-1);
       FILE* out_file[num_frames];
       size_t img_size = width * height * 4;
       
@@ -584,6 +587,7 @@ int main(int argc, char **argv) {
   gltSetText(error, "COMPILATION:ERROR");
   
   uint64_t timer = 0;
+  point_t mouse = {.x = 0.5, .y = 0.5, .z = 0};
   
   bool interactive = argument_pos(argc, argv, "-i") > 0;
   bool finished = false;
@@ -609,6 +613,7 @@ int main(int argc, char **argv) {
         }
         active_program = program;
         glProgramUniform2i(active_program, 3, width, height);
+        glProgramUniform2f(active_program, 1, mouse.x, mouse.y);
         request_error = false;
         if (!interactive) {
           draw_content(offscr);
@@ -633,8 +638,8 @@ int main(int argc, char **argv) {
           if (btn_state & SDL_BUTTON(1)) {
             float ndc_x = (((float)x / width) * 2) - 1;
             float ndc_y = (((float)y / height) * 2) - 1;
-            point_t mouse_pt = scale_ndc((point_t) { ndc_x, -ndc_y }, width, height);
-            glProgramUniform2f(active_program, 1, mouse_pt.x, mouse_pt.y);            
+            mouse = scale_ndc((point_t) { ndc_x, -ndc_y }, width, height);
+            glProgramUniform2f(active_program, 1, mouse.x, mouse.y);            
           }
           if (btn_state & SDL_BUTTON(3)) {
             GLuint fb = request_color ? 0 : offscr.fb[0];
