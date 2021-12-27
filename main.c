@@ -43,7 +43,7 @@ void __bad(const char* msg, const char* error) {
 typedef struct stat stat_t; 
 
 typedef struct offscreen_s {
-  GLuint fb[2]; // 0-simple 1-MSAA
+  GLuint fb[2]; // 0-direct 1-feedback
   GLuint rb[2]; // ..
   GLuint tx[2]; // ..
   size_t wh[2]; // width,height
@@ -92,9 +92,60 @@ point_t scale_ndc(point_t pt, int w, int h) {
 }
 
 
-GLuint   active_program = 0;
-GLuint   poster_program = 0;
-shape_t  active_screen;
+typedef struct __program_set {
+  union {
+    GLuint prog[2];
+    struct { GLuint frag, comp; };
+  };
+  GLuint post;
+  struct {
+    GLuint id;
+    void* data;
+    size_t item_size;
+    size_t num_items;
+  } ssbo;
+} program_set_t;
+
+
+program_set_t pgset = { 0, 0, 0, {0, NULL, 0} };
+shape_t screen_quad;
+
+
+void dispose_program_set(program_set_t set) {
+  if (set.frag) glDeleteProgram(set.frag);
+  if (set.post) glDeleteProgram(set.post);
+  if (set.comp) glDeleteProgram(set.comp);
+  if (set.ssbo.data) free(set.ssbo.data);
+  if (set.ssbo.id) glDeleteBuffers(1, &(set.ssbo.id));
+}
+
+
+void update_compute_buffer(program_set_t *set, size_t item_size, size_t num_items) {
+  if (set->ssbo.item_size * set->ssbo.num_items != item_size * num_items) {
+    if (set->ssbo.data) free(set->ssbo.data);
+    if (set->ssbo.id) glDeleteBuffers(1, &(set->ssbo.id));
+    set->ssbo.data = malloc(item_size * num_items);
+    glGenBuffers(1, &(set->ssbo.id));
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, set->ssbo.id);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, item_size * num_items, &(set->ssbo.data), GL_DYNAMIC_COPY);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    set->ssbo.item_size = item_size;
+    set->ssbo.num_items = num_items;
+  }
+}
+
+void broadcast_uniform1f(program_set_t set, GLuint id, float x) {
+  for (int n = 0; n < 2; n++) {
+    if (set.prog[n]) glProgramUniform1f(set.prog[n], id, x);
+  }
+}
+
+void broadcast_uniform2f(program_set_t set, GLuint id, float x, float y) {
+  for (int n = 0; n < 2; n++) {
+    if (set.prog[n]) glProgramUniform2f(set.prog[n], id, x, y);
+  }
+}
+
 
 
 void enable_buffers(shape_t sp) {
@@ -136,6 +187,151 @@ shape_t gen_quad(point_t a_xyz, point_t b_xyz, point_t a_uvw, point_t b_uvw) {
 }
 
 
+// FILESYSTEM
+
+char *ltrim(char *s) {
+    while(isspace(*s)) s++; 
+    return s;
+}
+
+void strpak(char *s, char end, char *out) {
+  for (; *s != end; s++) {
+    if (isspace(*s)) { 
+      continue;
+    } else {
+      *out = *s;
+      out++;
+    } 
+  }
+}
+
+void split_path(const char* src, char* path, char* name) {
+  char* x = strrchr(src, '/');
+  if (x) {
+    memcpy(name, x + 1, strlen(x));
+    memcpy(path, src, strlen(src) - strlen(x));
+  } else {
+    memcpy(name, src, strlen(src));
+  }
+}
+
+void get_extension(const char* path, char* ext) {
+  char* x = strrchr(path, '.');
+  if (x) memcpy(ext, x + 1, strlen(x));
+}
+
+
+void check_mkdir(int error, const char* path) {
+  if (error == 0 || errno == EEXIST) return;
+  __bad("create directory", path);
+}
+
+
+void drill_path(char* path) {
+  char* x = path[0] != '.' ? strchr(path, '/') : strchr(strchr(path, '/') + 1, '/');
+  for(; x; x = strchr(x + 1, '/')) {
+    *x = 0;
+    check_mkdir(mkdir(path), path);
+    *x = '/';
+  }
+  check_mkdir(mkdir(path), path);
+}
+
+
+typedef struct __code_block {
+  char* frag;
+  char* comp;
+  char* vert;
+  struct __comp_opts {
+    size_t item_size;
+    size_t num_items;
+  } comp_opts;
+} code_block_t;
+
+
+void dispose_code_block(code_block_t bk) {
+  if (bk.frag) free(bk.frag);
+  if (bk.comp) free(bk.comp);
+  if (bk.vert) free(bk.vert);
+}
+
+
+code_block_t split_composed_code(char* code) {
+    code_block_t block = { NULL, NULL, NULL, {0} };
+    const char *action = "read composed file";
+    char *p = code;
+    
+    if (p = strchr(p, '$')) {
+      char *header_end = p;
+      size_t header_size = header_end - code;
+      p = ltrim(p + 1);
+      if (strncmp("compute", p, 7) == 0) {
+        if (p = strchr(p, '[')) {
+          char args[64] = {0};
+          strpak(p + 1, ']', args);
+          sscanf(args, "%d,%d", &(block.comp_opts.item_size), &(block.comp_opts.num_items));
+        }
+        char *comp_start = strchr(p, '\n') + 1;
+        if (p = strchr(p, '$')) {
+          size_t comp_size = p - comp_start;
+          block.comp = malloc(comp_size + header_size + 1);
+          memcpy(block.comp, code, header_size);
+          memcpy(block.comp + header_size, comp_start, comp_size);
+          block.comp[comp_size + header_size] = 0;
+          
+          char *frag_start = strchr(p, '\n') + 1;
+          p = strchr(p, 0);
+          size_t frag_size = p - frag_start;
+          block.frag = malloc(frag_size + header_size + 1);
+          memcpy(block.frag, code, header_size);
+          memcpy(block.frag + header_size, frag_start, frag_size);
+          block.frag[frag_size + header_size] = 0;
+        
+        } else {
+          __bad(action, "fragment block required");
+        }
+      } else {
+        __bad(action, "no compute block");
+      }
+    } else {
+      __bad(action, "no blocks");
+    }
+    return block;
+}
+
+code_block_t load_shader_code(const char *path) {
+  FILE *fl = fopen(path, "r");
+  if (fl == NULL) 
+    __bad("open shader file", path);
+  fseek(fl, 0, SEEK_END);
+  long size = ftell(fl);
+  fseek(fl, 0, SEEK_SET);
+  char *code = malloc(size + 1);
+  fread(code, 1, size, fl);
+  fclose(fl);
+  code[size] = 0;
+  
+  char ext[8] = {0};
+  get_extension(path, ext);
+  if (strcmp(ext, "comp") == 0) {
+      code_block_t cb = split_composed_code(code);
+      free(code);
+      return cb;
+  } else {
+    return (code_block_t){ code, NULL, NULL, {0} };
+  }
+}
+
+// SHADER PROGRAM
+
+void dispose_shaders(GLuint prog, GLuint shader[]) {
+  for (; *shader; shader++) {
+    glDetachShader(prog, *shader);
+    glDeleteShader(*shader);
+  }
+}
+
+
 bool check_shader(GLuint shader) {
   GLint isCompiled;
   glGetShaderiv(shader, GL_COMPILE_STATUS, &isCompiled);
@@ -148,26 +344,6 @@ bool check_shader(GLuint shader) {
     return false;
   }
   return true;
-}
-
-char* load_shader_code(const char *path) {
-  FILE *fl = fopen(path, "r");
-  if (fl == NULL) 
-    __bad("open shader file", path);
-  fseek(fl, 0, SEEK_END);
-  long size = ftell(fl);
-  fseek(fl, 0, SEEK_SET);
-  char *code = malloc(size + 1);
-  fread(code, 1, size, fl);
-  fclose(fl);
-  code[size] = 0;
-  return code;
-}
-
-void dispose_shaders(GLuint shader[]) {
-  for (; *shader; shader++) {
-    glDeleteShader(*shader);
-  }
 }
 
 
@@ -186,37 +362,41 @@ bool check_program(GLuint program) {
 }
 
 
-GLuint create_program(const char** vert_s, const char** frag_s) {
-    GLuint vert = glCreateShader(GL_VERTEX_SHADER);
-    GLuint frag = glCreateShader(GL_FRAGMENT_SHADER);
-    
-    glShaderSource(vert, 1, vert_s, 0);
-    glShaderSource(frag, 1, frag_s, 0);
-    
-    glCompileShader(vert);
-    if (!check_shader(vert)) {
-      dispose_shaders((GLuint[3]){vert, frag, 0});
-      return 0;
-    }
-    
-    glCompileShader(frag);
-    if (!check_shader(frag)) {
-      dispose_shaders((GLuint[3]){vert, frag, 0});
-      return 0;
-    }
-    
+GLuint create_shader(const char** src, GLenum type) {
+  GLuint s = glCreateShader(type);
+  glShaderSource(s, 1, src, 0);
+  glCompileShader(s);
+  if (!check_shader(s)) {
+    glDeleteShader(s);
+    return 0;
+  }
+  return s;
+}
+
+
+GLuint create_program(const char** vert_s, const char** frag_s, const char** comp_s) {
     GLuint prog = glCreateProgram();
-    glAttachShader(prog, vert);
-    glAttachShader(prog, frag);
-    glLinkProgram(prog);
-    dispose_shaders((GLuint[3]){vert, frag, 0});
+    GLuint sd[3] = {0};
     
+    if (comp_s) {
+      sd[0] = create_shader(comp_s, GL_COMPUTE_SHADER);
+    } else {
+      sd[0] = create_shader(vert_s, GL_VERTEX_SHADER);
+      sd[1] = create_shader(frag_s, GL_FRAGMENT_SHADER); 
+    }
+    for (int n = 0; sd[n]; n++) glAttachShader(prog, sd[n]); 
+    
+    glLinkProgram(prog);
     if (!check_program(prog)) {
       glDeleteProgram(prog);
       return 0;
-    } else return prog;
+    };
+    dispose_shaders(prog, sd);
+    return prog;
 }
 
+
+// IMAGE TOOLS
 
 void flip_y_axis(void *dest, void *src, size_t height, size_t row_size) {
   for (int n = 0; n < height; n++) {
@@ -224,6 +404,8 @@ void flip_y_axis(void *dest, void *src, size_t height, size_t row_size) {
   }
 }
 
+
+// WINDOW
 
 SDL_Window* create_window(int width, int height) {
   
@@ -261,8 +443,6 @@ SDL_Window* create_window(int width, int height) {
 }
 
 void dispose_window(SDL_Window* window) {
-  glDeleteProgram(poster_program);
-  glDeleteProgram(active_program);
   SDL_DestroyWindow(window);
   SDL_Quit();
 }
@@ -327,15 +507,25 @@ void dispose_offscreen(offscreen_t off) {
 
 
 void draw_content(offscreen_t off) {
+  // COMPUTE SHADER [OPTIONAL]
+  if (pgset.comp) {
+    glUseProgram(pgset.comp);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, pgset.ssbo.id);
+    int group_size[3] = {1};
+    glGetProgramiv(pgset.comp, GL_COMPUTE_WORK_GROUP_SIZE, group_size);
+    glDispatchCompute(pgset.ssbo.num_items / group_size[0] , group_size[1], group_size[2]);
+    glMemoryBarrier(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT);
+  }
+  
+  // FRAGMENT SHADER
   glBindFramebuffer(GL_FRAMEBUFFER, off.fb[0]);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-  draw_shape(active_screen, active_program, 0);
+  draw_shape(screen_quad, pgset.frag, 0);
   
-  //glBlitNamedFramebuffer(off.fb[1], off.fb[0], 0, 0, off.wh[0], off.wh[1], 0, 0, off.wh[0], off.wh[1], GL_COLOR_BUFFER_BIT, GL_NEAREST);
-  
+  // POSTPOROCESS SHADER
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glClear(GL_COLOR_BUFFER_BIT);
-  draw_shape(active_screen, poster_program, off.tx[0]);
+  draw_shape(screen_quad, pgset.post, off.tx[0]);
 }
 
 
@@ -386,30 +576,7 @@ const char *post_frag =
 "} \n";
 
 
-void split_path(const char* src, char* path, char* name) {
-  char* x = strrchr(src, '/');
-  if (x) {
-    memcpy(name, x + 1, strlen(x));
-    memcpy(path, src, strlen(src) - strlen(x));
-  } else {
-    memcpy(name, src, strlen(src));
-  }
-}
 
-void check_mkdir(int error, const char* path) {
-  if (error == 0 || errno == EEXIST) return;
-  __bad("create directory", path);
-}
-
-void drill_path(char* path) {
-  char* x = path[0] != '.' ? strchr(path, '/') : strchr(strchr(path, '/') + 1, '/');
-  for(; x; x = strchr(x + 1, '/')) {
-    *x = 0;
-    check_mkdir(mkdir(path), path);
-    *x = '/';
-  }
-  check_mkdir(mkdir(path), path);
-}
 
 
 int argument_pos(int argc, char **argv, const char *arg) {
@@ -492,13 +659,13 @@ int main(int argc, char **argv) {
   
   SDL_Window* window = create_window(width, height);
   offscreen_t offscr = create_offscreen(width, height);
-  active_screen = gen_quad(  
+  screen_quad = gen_quad(  
     (point_t){-1, 1, 0}, 
     (point_t){1, -1, 0}, 
     scale_ndc((point_t){-1, 1, 0}, width, height), 
     scale_ndc((point_t){1, -1, 0}, width, height));
 
-  poster_program = create_program(&bypass_vert, &post_frag);
+  pgset.post = create_program(&bypass_vert, &post_frag, NULL);
   
   // ANIMATION BATCH //
 
@@ -511,9 +678,12 @@ int main(int argc, char **argv) {
       float duration;
       sscanf(argv[anim_arg + 1], "%d,%f", &anim_fps, &duration);
       num_frames = floor(anim_fps * duration);
-      const char* src_frag = load_shader_code(argv[shader_path]);
-      active_program = create_program(&bypass_vert, &src_frag);
-      glProgramUniform2i(active_program, 3, width, height);
+      code_block_t cblock = load_shader_code(argv[shader_path]);
+      if (cblock.comp) {
+        pgset.comp = create_program(NULL, NULL, (const char**)&(cblock.comp));
+      }
+      pgset.frag = create_program(&bypass_vert, (const char**)&(cblock.frag), NULL);
+      glProgramUniform2i(pgset.frag, 3, width, height);
       
       struct spng_ihdr ihdr = {
         .color_type = SPNG_COLOR_TYPE_TRUECOLOR_ALPHA,
@@ -548,7 +718,7 @@ int main(int argc, char **argv) {
           spng_set_png_file(enc, out_file[n]);
           spng_set_ihdr(enc, &ihdr);
           
-          glProgramUniform1f(active_program, 0, delta * n);
+          broadcast_uniform1f(pgset, 0, delta * n);
           draw_content(offscr);
           glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_SHORT, frame_buf);
           SDL_GL_SwapWindow(window);
@@ -563,7 +733,7 @@ int main(int argc, char **argv) {
       }
       free(frame_buf);
       free(flipped_buf);
-      free((char*)src_frag);
+      dispose_code_block(cblock);
       for (int n = 0; n < num_frames; n++) { 
         fclose(out_file[n]);
       }
@@ -571,8 +741,8 @@ int main(int argc, char **argv) {
     } else {
       __bad("output animation", "use -h for help");
     }
-    
-    dispose_shape(active_screen);
+    dispose_program_set(pgset);
+    dispose_shape(screen_quad);
     dispose_window(window);
     return 0;
   }
@@ -605,15 +775,23 @@ int main(int argc, char **argv) {
     if(stat(argv[shader_path], &fstat[1]) < 0)
       __bad("read shader file", argv[shader_path]);
     if (fstat[0].st_mtime != fstat[1].st_mtime) {
-      const char* src_frag = load_shader_code(argv[shader_path]);
-      GLuint program = create_program(&bypass_vert, &src_frag);
-      if (program) {
-        if (active_program)  {
-          glDeleteProgram(active_program);
+      code_block_t cblock = load_shader_code(argv[shader_path]);
+      if (cblock.comp) {
+        GLuint compute = create_program(NULL, NULL, (const char**)&(cblock.comp));
+        if (compute) {
+          if (pgset.comp) glDeleteProgram(pgset.comp);
+          update_compute_buffer(&pgset, cblock.comp_opts.item_size, cblock.comp_opts.num_items);
+          pgset.comp = compute;
         }
-        active_program = program;
-        glProgramUniform2i(active_program, 3, width, height);
-        glProgramUniform2f(active_program, 1, mouse.x, mouse.y);
+      }
+      GLuint program = create_program(&bypass_vert, (const char**)&(cblock.frag), NULL);
+      if (program) {
+        if (pgset.frag)  {
+          glDeleteProgram(pgset.frag);
+        }
+        pgset.frag = program;
+        glProgramUniform2i(pgset.frag, 3, width, height);
+        broadcast_uniform2f(pgset, 1,  mouse.x, mouse.y);
         request_error = false;
         if (!interactive) {
           draw_content(offscr);
@@ -624,7 +802,7 @@ int main(int argc, char **argv) {
       }
       request_update = true;
       fstat[0] = fstat[1];
-      free((char*)src_frag);
+      dispose_code_block(cblock);
     }
     
     for (int n = 0; n < 1000 / delay; n++) {
@@ -639,7 +817,7 @@ int main(int argc, char **argv) {
             float ndc_x = (((float)x / width) * 2) - 1;
             float ndc_y = (((float)y / height) * 2) - 1;
             mouse = scale_ndc((point_t) { ndc_x, -ndc_y }, width, height);
-            glProgramUniform2f(active_program, 1, mouse.x, mouse.y);            
+            broadcast_uniform2f(pgset, 1, mouse.x, mouse.y);            
           }
           if (btn_state & SDL_BUTTON(3)) {
             GLuint fb = request_color ? 0 : offscr.fb[0];
@@ -669,15 +847,15 @@ int main(int argc, char **argv) {
             case SDLK_c : mode = 6; request_color = true; break;
             case SDLK_t : always_update = !always_update; break;
           }
-          glProgramUniform1i(poster_program, 0, mode);
+          glProgramUniform1i(pgset.post, 0, mode);
         }
         if (event.type == SDL_KEYUP) {
-          glProgramUniform1i(poster_program, 0, 0);
+          glProgramUniform1i(pgset.post, 0, 0);
         }    
         request_update = true;
       }
       if (interactive && request_update || always_update) {
-        glProgramUniform1f(active_program, 0, (float)timer / 1000);
+        broadcast_uniform1f(pgset, 0, (float)timer / 1000);
         draw_content(offscr);
         if (request_info || request_error) {
           gltBeginDraw();
@@ -692,9 +870,10 @@ int main(int argc, char **argv) {
       if (always_update) timer += delay;
     }
   }
+  dispose_program_set(pgset);
+  dispose_shape(screen_quad);
   dispose_offscreen(offscr);
-  dispose_shape(active_screen);
-  gltTerminate();
   dispose_window(window);
+  gltTerminate();
   return 0;
 }

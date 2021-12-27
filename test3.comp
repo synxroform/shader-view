@@ -1,0 +1,46 @@
+#version 430
+#define PI 3.1415
+
+// example of compute-fragment pipeline
+// code before any block common to both shaders
+
+layout (location = 0) uniform float time;
+layout (location = 1) uniform vec2 mouse;
+
+layout (std430, binding = 0) buffer __points {
+  vec2 points[];
+};
+
+
+// this is compute block, should come first
+// parameters are [ item_size, num_items]
+// item_size -- float=32, vec2=64, struct{vec2,float}=96, etc
+// num_items -- total number of items in a buffer
+// new buffer will be created as malloc(item_size * num_items)
+// if total size doesn't change, old buffer will be retained
+
+$ compute [ 32, 64 ]
+
+layout(local_size_x = 8) in; // size of workgroup
+
+
+void main() {
+  uint id = gl_GlobalInvocationID.x;
+  points[id].y = 1 - (float(id) / 32);
+  points[id].x = sin(time * 2 + id) * 0.5;
+}
+
+// this is fragmen shader called after compute
+
+$ fragment
+
+in vec2 uv;
+out vec4 color;
+
+void main() {
+  float acc = 0;
+  for (int n = 0; n < 64; n++) {
+    acc += 1 - smoothstep(0., 0.01, abs(distance(vec2(points[n].x, points[n].y), uv) - 0.05));
+  }
+  color = vec4(vec3(acc), 1);
+}

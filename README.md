@@ -59,3 +59,10 @@ copied to clipboard as a color vec4(R, G, B, 1.0).
 Working examples can be found in the test*.frag respectively, more to come.
 
 <p align="center"><img src="pixie/examples.webp"/></p>
+
+## compute shaders
+
+Sometimes it's less expensive to perform computation on per-component basis, rather than
+per-pixel. You can create compute-fragment pipelines using special files with .comp extension.
+For example of such file look at test3.comp, just pass it instead of .frag with -f option.
+
